@@ -1,0 +1,2 @@
+# lazyssh
+ssh connection manage
