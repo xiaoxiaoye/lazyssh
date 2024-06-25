@@ -1,140 +1,95 @@
-// Copyright 2014 The gocui Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package main
 
 import (
-	"fmt"
-	"log"
+	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
 
-	"github.com/jroimartin/gocui"
+	"github.com/creack/pty"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 	"github.com/xiaoxiaoye/lazyssh/ssh"
+	"golang.org/x/term"
 )
 
-var (
-	hosts   = map[string]ssh.SSHConfig{}
-	curHost string
-)
+func NewTerminal(config ssh.SSHConfig) {
+	// c := exec.Command("bash")
+	ip := config.Hostname
+	port := config.Port
+	if port == "" {
+		port = "22"
+	}
+	user := config.User
+	if user == "" {
+		user = "root"
+	}
 
-func init() {
-	sshConfigPath := os.ExpandEnv("$HOME/.ssh/config")
-	configs, err := ssh.ParseSSHConfig(sshConfigPath)
+	c := exec.Command("ssh", "-oPort="+port, user+"@"+ip)
+	var err error
+	ptmx, err := pty.Start(c)
 	if err != nil {
 		panic(err)
 	}
-	hosts = configs
-}
+	defer func() { _ = ptmx.Close() }() // Best effort.
+	// ptmx.Write([]byte("export TERM=xterm-256color\n"))
 
-func layout(g *gocui.Gui) error {
-	maxX, maxY := g.Size()
-	if v, err := g.SetView("side", -1, -1, int(0.2*float32(maxX)), maxY-5); err != nil {
-		if err != gocui.ErrUnknownView {
-			return err
-		}
-		v.Highlight = true
-		v.SelBgColor = gocui.ColorGreen
-		v.SelFgColor = gocui.ColorBlack
-		for k := range hosts {
-			fmt.Fprintln(v, k)
-		}
-		curHost = "host1"
+	ws := pty.Winsize{Rows: 40, Cols: 120}
+	pty.Setsize(ptmx, &ws)
 
-		g.SetCurrentView("side")
-	}
-	if vm, err := g.SetView("main", int(0.2*float32(maxX)), -1, maxX, maxY-5); err != nil {
-		if err != gocui.ErrUnknownView {
-			return err
-		}
-		vm.Editable = true
-		vm.Wrap = true
-		vm.Overwrite = true
-		if curHost != "" && vm != nil {
-			vm.Clear()
-			fmt.Fprintf(vm, "#Details: [%s]\n", hosts[curHost])
-		}
-	}
-	return nil
-}
-
-func quit(g *gocui.Gui, v *gocui.View) error {
-	return gocui.ErrQuit
-}
-
-func keybindings(g *gocui.Gui) error {
-	if err := g.SetKeybinding("side", gocui.KeyArrowDown, gocui.ModNone, cursorDown); err != nil {
-		return err
-	}
-	if err := g.SetKeybinding("side", gocui.KeyArrowUp, gocui.ModNone, cursorUp); err != nil {
-		return err
-	}
-
-	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
-		log.Panicln(err)
-	}
-	if err := g.SetKeybinding("", 'q', gocui.ModNone, quit); err != nil {
-		log.Panicln(err)
-	}
-	return nil
-}
-
-func cursorDown(g *gocui.Gui, v *gocui.View) error {
-	if v != nil {
-		cx, cy := v.Cursor()
-		writeHostDetail(g, v, cy+1)
-		if err := v.SetCursor(cx, cy+1); err != nil {
-			ox, oy := v.Origin()
-			if err := v.SetOrigin(ox, oy+1); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func cursorUp(g *gocui.Gui, v *gocui.View) error {
-	if v != nil {
-		ox, oy := v.Origin()
-		cx, cy := v.Cursor()
-		writeHostDetail(g, v, cy-1)
-		if err := v.SetCursor(cx, cy-1); err != nil && oy > 0 {
-			if err := v.SetOrigin(ox, oy-1); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func writeHostDetail(g *gocui.Gui, v *gocui.View, y int) error {
-	line, err := v.Line(y)
+	// Set stdin in raw mode.
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
-		line = ""
+		panic(err)
 	}
-	curHost = line
-	vm, _ := g.View("main")
-	if vm != nil {
-		vm.Clear()
-		fmt.Fprintf(vm, "##Details: [%s]\n", hosts[curHost])
-	}
-	return nil
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }() // Best effort.
+
+	// Copy stdin to the pty and the pty to stdout.
+	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
+	_, _ = io.Copy(os.Stdout, ptmx)
 }
 
 func main() {
-	g, err := gocui.NewGui(gocui.OutputNormal)
+	app := tview.NewApplication()
+	hosts, err := ssh.ParseSSHConfig()
 	if err != nil {
-		log.Panicln(err)
-	}
-	defer g.Close()
-
-	g.SetManagerFunc(layout)
-
-	if err := keybindings(g); err != nil {
-		log.Panicln(err)
+		panic(err)
 	}
 
-	if err := g.MainLoop(); err != nil && err != gocui.ErrQuit {
-		log.Panicln(err)
+	configView := tview.NewTextArea()
+	configView.SetBorder(true).SetTitle("Config")
+
+	hostView := tview.NewList()
+	shortKey := rune('a')
+	for host, config := range hosts {
+		if shortKey == 'q' {
+			shortKey++
+		}
+		copyH := config
+		hostView.AddItem(host, "", shortKey, func() {
+			app.Suspend(func() {
+				NewTerminal(copyH)
+			})
+		})
+		shortKey++
+	}
+	hostView.SetChangedFunc(func(i int, s string, s2 string, s3 rune) {
+		config := hosts[s]
+		sc, _ := json.MarshalIndent(config, "", "  ")
+		configView.SetText(string(sc), true)
+	})
+
+	flex := tview.NewFlex().
+		AddItem(hostView, 0, 1, true).AddItem(configView, 0, 2, false)
+
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Rune() {
+		case 'q':
+			app.Stop() // Quit the application
+		}
+		return event
+	})
+	if err := app.SetRoot(flex, true).Run(); err != nil {
+		panic(err)
 	}
 }

@@ -2,13 +2,11 @@ package ssh
 
 import (
 	"fmt"
-	"os"
 	"testing"
 )
 
 func Test_ParseSSH(t *testing.T) {
-	sshConfigPath := os.ExpandEnv("$HOME/.ssh/config")
-	configs, err := ParseSSHConfig(sshConfigPath)
+	configs, err := ParseSSHConfig()
 	if err != nil {
 		fmt.Printf("Error parsing SSH config: %v\n", err)
 		return

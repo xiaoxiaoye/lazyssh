@@ -26,8 +26,9 @@ func (c SSHConfig) String() string {
 }
 
 // ParseSSHConfig parses the .ssh/config file and returns a map of SSH configurations.
-func ParseSSHConfig(filePath string) (map[string]SSHConfig, error) {
-	file, err := os.Open(filePath)
+func ParseSSHConfig() (map[string]SSHConfig, error) {
+	sshConfigPath := os.ExpandEnv("$HOME/.ssh/config")
+	file, err := os.Open(sshConfigPath)
 	if err != nil {
 		return nil, err
 	}
