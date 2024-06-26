@@ -34,7 +34,7 @@ func NewTerminal(config ssh.SSHConfig) {
 	}
 	defer func() { _ = ptmx.Close() }() // Best effort.
 
-	ws := pty.Winsize{Rows: 40, Cols: 120}
+	ws := pty.Winsize{Rows: 57, Cols: 205}
 	pty.Setsize(ptmx, &ws)
 
 	// Set stdin in raw mode.
