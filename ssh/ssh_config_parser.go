@@ -98,6 +98,14 @@ func ParseSSHConfig() (map[string]SSHConfig, error) {
 		}
 	}
 
+	// hostList := make([]SSHConfig, 0, len(configs))
+	// for _, config := range configs {
+	// 	hostList = append(hostList, config)
+	// }
+	// sort.Slice(hostList, func(i, j int) bool {
+	// 	return hostList[i].Host < hostList[j].Host
+	// })
+
 	return configs, nil
 }
 

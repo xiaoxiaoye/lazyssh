@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 
 	"github.com/creack/pty"
 	"github.com/gdamore/tcell/v2"
@@ -32,7 +33,6 @@ func NewTerminal(config ssh.SSHConfig) {
 		panic(err)
 	}
 	defer func() { _ = ptmx.Close() }() // Best effort.
-	// ptmx.Write([]byte("export TERM=xterm-256color\n"))
 
 	ws := pty.Winsize{Rows: 40, Cols: 120}
 	pty.Setsize(ptmx, &ws)
@@ -51,22 +51,30 @@ func NewTerminal(config ssh.SSHConfig) {
 
 func main() {
 	app := tview.NewApplication()
-	hosts, err := ssh.ParseSSHConfig()
+	hostsConfig, err := ssh.ParseSSHConfig()
 	if err != nil {
 		panic(err)
 	}
+
+	hostsList := make([]ssh.SSHConfig, 0, len(hostsConfig))
+	for _, config := range hostsConfig {
+		hostsList = append(hostsList, config)
+	}
+	sort.Slice(hostsList, func(i, j int) bool {
+		return hostsList[i].Host < hostsList[j].Host
+	})
 
 	configView := tview.NewTextArea()
 	configView.SetBorder(true).SetTitle("Config")
 
 	hostView := tview.NewList()
 	shortKey := rune('a')
-	for host, config := range hosts {
-		if shortKey == 'q' {
+	for _, config := range hostsList {
+		if shortKey == 'q' || shortKey == 'j' || shortKey == 'k' {
 			shortKey++
 		}
 		copyH := config
-		hostView.AddItem(host, "", shortKey, func() {
+		hostView.AddItem(config.Host, "", shortKey, func() {
 			app.Suspend(func() {
 				NewTerminal(copyH)
 			})
@@ -74,13 +82,24 @@ func main() {
 		shortKey++
 	}
 	hostView.SetChangedFunc(func(i int, s string, s2 string, s3 rune) {
-		config := hosts[s]
+		config := hostsConfig[s]
 		sc, _ := json.MarshalIndent(config, "", "  ")
 		configView.SetText(string(sc), true)
 	})
+	hostView.SetBorder(true).SetTitle("Hosts")
+	hostView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Rune() {
+		case 'j':
+			hostView.SetCurrentItem((hostView.GetCurrentItem() + 1) % hostView.GetItemCount())
+		case 'k':
+			hostView.SetCurrentItem((hostView.GetCurrentItem() - 1 + hostView.GetItemCount()) % hostView.GetItemCount())
+		}
+		return event
+	})
 
 	flex := tview.NewFlex().
-		AddItem(hostView, 0, 1, true).AddItem(configView, 0, 2, false)
+		AddItem(hostView, 0, 1, true).
+		AddItem(configView, 0, 2, false)
 
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
