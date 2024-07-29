@@ -2,40 +2,41 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"sort"
+	"syscall"
 
 	"github.com/creack/pty"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"github.com/xiaoxiaoye/lazyssh/ssh"
+	lazyssh "github.com/xiaoxiaoye/lazyssh/ssh"
 	"golang.org/x/term"
 )
 
-func NewTerminal(config ssh.SSHConfig) {
-	// c := exec.Command("bash")
-	ip := config.Hostname
-	port := config.Port
+func NewTerminal(conf lazyssh.SSHConfig) {
+	// 创建执行命令
+	ip := conf.Hostname
+	port := conf.Port
 	if port == "" {
 		port = "22"
 	}
-	user := config.User
+	user := conf.User
 	if user == "" {
 		user = "root"
 	}
-
 	c := exec.Command("ssh", "-oPort="+port, user+"@"+ip)
-	var err error
+
+	// 创建伪终端
 	ptmx, err := pty.Start(c)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Error starting pty: %v\n", err)
+		return
 	}
-	defer func() { _ = ptmx.Close() }() // Best effort.
-
-	ws := pty.Winsize{Rows: 57, Cols: 205}
-	pty.Setsize(ptmx, &ws)
+	defer func() { _ = ptmx.Close() }() // 确保程序退出时关闭伪终端
 
 	// Set stdin in raw mode.
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
@@ -44,19 +45,38 @@ func NewTerminal(config ssh.SSHConfig) {
 	}
 	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }() // Best effort.
 
-	// Copy stdin to the pty and the pty to stdout.
+	// 捕获窗口大小变化信号
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGWINCH)
+	go func(tty *os.File) {
+		for range ch {
+			if err := pty.InheritSize(os.Stdin, tty); err != nil {
+				fmt.Printf("Error resizing pty: %v\n", err)
+			}
+		}
+	}(ptmx)
+	ch <- syscall.SIGWINCH // 初始化窗口大小
+
+	// 将标准输入、输出、错误连接到伪终端
 	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
-	_, _ = io.Copy(os.Stdout, ptmx)
+	go func() { _, _ = io.Copy(os.Stdout, ptmx) }()
+
+	// 等待命令退出
+	if err := c.Wait(); err != nil {
+		fmt.Printf("Error waiting for command: %v\n", err)
+	}
 }
 
 func main() {
 	app := tview.NewApplication()
-	hostsConfig, err := ssh.ParseSSHConfig()
+	setTheme()
+
+	hostsConfig, err := lazyssh.ParseSSHConfig()
 	if err != nil {
 		panic(err)
 	}
 
-	hostsList := make([]ssh.SSHConfig, 0, len(hostsConfig))
+	hostsList := make([]lazyssh.SSHConfig, 0, len(hostsConfig))
 	for _, config := range hostsConfig {
 		hostsList = append(hostsList, config)
 	}
@@ -111,4 +131,12 @@ func main() {
 	if err := app.SetRoot(flex, true).Run(); err != nil {
 		panic(err)
 	}
+}
+
+func setTheme() {
+	tview.Styles.PrimitiveBackgroundColor = tcell.ColorWhiteSmoke
+	tview.Styles.TitleColor = tcell.ColorBlack
+	tview.Styles.BorderColor = tcell.ColorBlack
+	tview.Styles.PrimaryTextColor = tcell.ColorBlack
+	tview.Styles.SecondaryTextColor = tcell.ColorBlack
 }
